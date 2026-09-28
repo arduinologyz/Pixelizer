@@ -1,0 +1,2117 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#eef0f8">
+  <title>Pixel Camera</title>
+
+  <style>
+    :root {
+      --primary: #53649a;
+      --on-primary: #ffffff;
+      --primary-container: #dce2ff;
+      --on-primary-container: #0d173d;
+      --secondary-container: #e5e2ec;
+      --on-secondary-container: #45434d;
+      --surface: #f9f9ff;
+      --surface-container: #eef0f8;
+      --text: #1a1b20;
+      --text-secondary: #46464f;
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 18px;
+      --shadow: 0 8px 28px rgba(50, 55, 80, .13);
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Without this, unconditional `display` rules below (on #resultCanvas,
+       .empty-preview, .style-strip, etc.) win over the browser's own
+       [hidden]{display:none} - normal author CSS always beats the UA
+       stylesheet regardless of selector specificity. That silently kept
+       the empty-state overlay painted on top of the canvas forever, no
+       matter what .hidden was set to in JS. */
+    [hidden] {
+      display: none !important;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    body { min-height: 100dvh; }
+
+    button, select, input { font: inherit; }
+    button { border: 0; outline: 0; }
+
+    .app {
+      width: 100%;
+      height: 100dvh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      max-width: 100vw;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(220, 226, 255, .65), transparent 35%),
+        linear-gradient(180deg, #f8f9ff 0%, #f7f7fc 100%);
+    }
+
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: max(15px, env(safe-area-inset-top)) 18px 12px;
+    }
+
+    .title-group { min-width: 0; }
+
+    .title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.1;
+      font-weight: 750;
+      letter-spacing: -.035em;
+    }
+
+    .subtitle {
+      margin: 5px 0 0;
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .status-chip {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 12px;
+      border-radius: 999px;
+      background: var(--secondary-container);
+      color: var(--on-secondary-container);
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #85858e;
+    }
+
+    .status-chip.active .status-dot { background: #4c8b58; }
+
+    .top-bar, .bottom-bar { min-width: 0; max-width: 100%; }
+
+    .main {
+      min-width: 0;
+      max-width: 100%;
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 8px 14px 10px;
+    }
+
+    /* The area takes all free vertical space; the shell inside it is
+       sized from JS to exactly match the photo's aspect ratio, so
+       portrait, landscape and square photos all fill their frame with
+       no dark side bars. */
+    .preview-area {
+      position: relative;
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 240px;
+      width: 100%;
+    }
+
+    .preview-shell {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #111319;
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+
+    .preview-shell::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border: 1px solid rgba(255, 255, 255, .08);
+      border-radius: inherit;
+      pointer-events: none;
+      z-index: 20;
+    }
+
+    #resultCanvas {
+      /* Position/size are set from JS (fitResultCanvas), in real pixels,
+         based on the container's measured size. An absolutely positioned
+         element can never inflate its ancestors' layout width - unlike
+         the previous approach (auto width/height sized from the canvas's
+         own huge intrinsic resolution), which could blow out the whole
+         page inside nested flex/grid containers on some mobile WebViews. */
+      position: absolute;
+      display: block;
+      background: #fff;
+      image-rendering: pixelated;
+    }
+
+    .empty-preview {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 22px;
+      color: rgba(255,255,255,.55);
+      background:
+        radial-gradient(circle at 50% 42%, rgba(83,100,154,.18), transparent 34%),
+        #111319;
+    }
+
+    .empty-preview svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+      flex: 0 0 auto;
+    }
+
+    .empty-preview span {
+      min-width: 0;
+      flex: 1 1 auto;
+      font-size: 13px;
+      font-weight: 600;
+      overflow-wrap: break-word;
+    }
+
+    .preview-badge {
+      position: absolute;
+      z-index: 10;
+      top: 14px;
+      right: 14px;
+      padding: 8px 11px;
+      border-radius: 999px;
+      color: white;
+      background: rgba(18, 19, 25, .48);
+      backdrop-filter: blur(12px);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .style-strip {
+      flex: 0 0 auto;
+      min-width: 0;
+      width: 100%;
+      max-width: 100%;
+      display: flex;
+      gap: 9px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-x;
+      overscroll-behavior-x: contain;
+      padding: 2px 4px 6px;
+      scroll-padding: 0 4px;
+      scrollbar-width: none;
+    }
+
+    .style-strip::-webkit-scrollbar { display: none; }
+
+    .style-thumb {
+      position: relative;
+      flex: 0 0 auto;
+      width: 68px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      padding: 0;
+      background: none;
+      opacity: .55;
+      transition: opacity .15s ease, transform .15s ease;
+    }
+
+    .style-thumb:active { transform: scale(.95); }
+
+    .style-thumb.active { opacity: 1; }
+
+    .style-thumb canvas {
+      width: 68px;
+      height: 68px;
+      border-radius: var(--radius-md);
+      background: #111319;
+      box-shadow: var(--shadow);
+      display: block;
+    }
+
+    .style-thumb.active canvas {
+      outline: 2.5px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    .style-thumb-label {
+      font-size: 10.5px;
+      font-weight: 650;
+      color: var(--text-secondary);
+      text-align: center;
+      line-height: 1.15;
+      white-space: nowrap;
+    }
+
+    .style-thumb.active .style-thumb-label { color: var(--primary); }
+
+    .controls-card {
+      flex: 0 0 auto;
+      padding: 13px;
+      border-radius: var(--radius-lg);
+      background: var(--surface-container);
+      display: flex;
+      flex-direction: column;
+      gap: 11px;
+    }
+
+    .controls-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(115px, .72fr);
+      gap: 10px;
+    }
+
+    .field { min-width: 0; }
+
+    .field-label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 0 6px 3px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .field-label-value {
+      color: var(--primary);
+      font-weight: 750;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .select-wrap { position: relative; }
+
+    select {
+      width: 100%;
+      min-height: 50px;
+      padding: 0 38px 0 15px;
+      border: 1px solid rgba(100,101,111,.20);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      color: var(--text);
+      appearance: none;
+      outline: none;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .select-wrap::after {
+      content: "⌄";
+      position: absolute;
+      top: 50%;
+      right: 14px;
+      transform: translateY(-52%);
+      pointer-events: none;
+      color: var(--text-secondary);
+      font-size: 20px;
+    }
+
+    select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(83,100,154,.14);
+    }
+
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .range-row span {
+      flex: 0 0 auto;
+      font-size: 15px;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      flex: 1;
+      min-width: 0;
+      height: 34px;
+      background: transparent;
+      accent-color: var(--primary);
+    }
+
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(100,101,111,.22);
+    }
+
+    input[type="range"]::-moz-range-track {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(100,101,111,.22);
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 24px;
+      height: 24px;
+      margin-top: -9px;
+      border-radius: 50%;
+      background: var(--primary);
+      border: 3px solid #fff;
+      box-shadow: 0 2px 8px rgba(50,55,80,.35);
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--primary);
+      border: 3px solid #fff;
+      box-shadow: 0 2px 8px rgba(50,55,80,.35);
+    }
+
+    .bottom-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px max(12px, env(safe-area-inset-bottom));
+      background: rgba(249,249,255,.92);
+      backdrop-filter: blur(17px);
+      border-top: 1px solid rgba(80,82,92,.08);
+    }
+
+    .btn {
+      min-height: 56px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 0 17px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 700;
+      transition: transform .13s ease, opacity .13s ease, box-shadow .13s ease;
+      user-select: none;
+      touch-action: manipulation;
+    }
+
+    .btn:active { transform: scale(.965); }
+
+    .btn:disabled {
+      opacity: .45;
+      cursor: default;
+      transform: none;
+    }
+
+    .btn-primary {
+      flex: 1 1 auto;
+      min-width: 0;
+      background: var(--primary);
+      color: var(--on-primary);
+      box-shadow: 0 7px 20px rgba(83,100,154,.27);
+    }
+
+    .btn-primary span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .btn-secondary {
+      flex: 0 0 auto;
+      min-width: 96px;
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+    }
+
+    .btn-icon {
+      flex: 0 0 auto;
+      width: 52px;
+      min-width: 52px;
+      padding: 0;
+      background: var(--secondary-container);
+      color: var(--on-secondary-container);
+    }
+
+    .icon {
+      width: 20px;
+      height: 20px;
+      flex: 0 0 auto;
+      fill: currentColor;
+    }
+
+    .file-input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .toast {
+      position: fixed;
+      z-index: 100;
+      left: 50%;
+      bottom: calc(92px + env(safe-area-inset-bottom));
+      transform: translate(-50%, 14px);
+      opacity: 0;
+      pointer-events: none;
+      padding: 11px 15px;
+      border-radius: 999px;
+      background: rgba(25,26,32,.92);
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      transition: opacity .18s ease, transform .18s ease;
+      white-space: nowrap;
+      max-width: calc(100vw - 30px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    @media (max-width: 390px) {
+      .top-bar {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      .title { font-size: 20px; }
+      .subtitle { font-size: 12px; }
+
+      .main {
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+
+      .controls-row {
+        grid-template-columns: 1fr;
+      }
+
+      .bottom-bar {
+        gap: 7px;
+        padding-left: 9px;
+        padding-right: 9px;
+      }
+
+      .btn {
+        min-height: 54px;
+        padding-left: 11px;
+        padding-right: 11px;
+        font-size: 13px;
+      }
+
+      .btn-secondary { min-width: 0; }
+      .btn-icon { width: 48px; min-width: 48px; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+
+    <header class="top-bar">
+      <div class="title-group">
+        <h1 class="title">Pixel Camera</h1>
+        <p class="subtitle">Фото → пиксель-арт прямо на телефоне</p>
+      </div>
+
+      <div id="statusChip" class="status-chip">
+        <span class="status-dot"></span>
+        <span id="statusText">Готово</span>
+      </div>
+    </header>
+
+    <main class="main">
+
+      <div id="previewArea" class="preview-area">
+      <section id="previewShell" class="preview-shell">
+        <canvas id="resultCanvas" hidden></canvas>
+
+        <div id="emptyPreview" class="empty-preview">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9.5 5 11 3h2l1.5 2H19a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4.5ZM12 9a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0 1.7a2.3 2.3 0 1 1 0 4.6 2.3 2.3 0 0 1 0-4.6Z"/>
+          </svg>
+          <span>Нажмите «Сделать фото» или загрузите своё</span>
+        </div>
+
+        <div id="previewBadge" class="preview-badge">Оригинал</div>
+      </section>
+      </div>
+
+      <div id="styleStrip" class="style-strip" hidden></div>
+
+      <section class="controls-card">
+        <div class="controls-row">
+
+          <div class="field">
+            <label class="field-label" for="styleSelect">
+              Стиль пикселизации
+            </label>
+
+            <div class="select-wrap">
+              <select id="styleSelect">
+                <option value="classic">Классический 8-бит</option>
+                <option value="gameboy">Game Boy / Ретро</option>
+                <option value="mono">Тонированный монохром</option>
+                <option value="contour">Контур / Комикс</option>
+                <option value="vhs">VHS / Глитч</option>
+                <option value="dither">Газетный дизер Ч/Б</option>
+                <option value="smart">Умная палитра по фото</option>
+                <option value="iso">Изометрик / RPG-плитки</option>
+                <option value="thermal">Термокамера</option>
+                <option value="ascii">ASCII-арт</option>
+                <option value="synth">Неон синтвейв</option>
+                <option value="riso">Risograph</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="toneField" class="field" hidden>
+            <label class="field-label" for="toneSelect">
+              <span id="toneFieldLabel">Тонировка</span>
+            </label>
+
+            <div class="select-wrap">
+              <select id="toneSelect"></select>
+            </div>
+          </div>
+
+          <div id="toneSpacer" aria-hidden="true"></div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="detailRange">
+            Детализация / размер пикселя
+            <span class="field-label-value" id="detailValue">45</span>
+          </label>
+
+          <div class="range-row">
+            <span title="Крупные пиксели">▦</span>
+            <input type="range" id="detailRange" min="16" max="260" step="1" value="45">
+            <span title="Мелкие пиксели">▪</span>
+          </div>
+        </div>
+
+        <div id="brightnessField" class="field" hidden>
+          <label class="field-label" for="brightnessRange">
+            Яркость (Комикс)
+            <span class="field-label-value" id="brightnessValue">0</span>
+          </label>
+
+          <div class="range-row">
+            <span title="Темнее">🌑</span>
+            <input type="range" id="brightnessRange" min="-60" max="60" step="5" value="0">
+            <span title="Светлее">☀️</span>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <nav class="bottom-bar">
+
+      <button id="photoButton" class="btn btn-primary" type="button">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9.5 5 11 3h2l1.5 2H19a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4.5ZM12 9a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0 1.7a2.3 2.3 0 1 1 0 4.6 2.3 2.3 0 0 1 0-4.6Z"/>
+        </svg>
+        <span id="photoButtonText">Сделать фото</span>
+      </button>
+
+      <button id="galleryButton" class="btn btn-icon" type="button" aria-label="Загрузить фото с устройства">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v9.6l4.3-4.2a1 1 0 0 1 1.36-.05l3.2 2.75 2.5-2.5a1 1 0 0 1 1.36-.05L19 13.2V6H5Zm3.6 2.6A1.6 1.6 0 1 1 7 10.2a1.6 1.6 0 0 1 1.6-1.6Z"/>
+        </svg>
+      </button>
+
+      <button id="saveButton" class="btn btn-secondary" type="button" disabled>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 20h14v-2H5v2Zm7-16-5 5h3v4h4V9h3l-5-5Z"/>
+        </svg>
+        <span>Сохранить</span>
+      </button>
+
+    </nav>
+
+    <!--
+      Съёмка через системную камеру телефона (без getUserMedia,
+      поэтому работает и при открытии как file:///.../index.html).
+      capture="environment" просит заднюю камеру.
+    -->
+    <input
+      id="cameraInput"
+      class="file-input"
+      type="file"
+      accept="image/*"
+      capture="environment"
+    >
+
+    <!-- Загрузка уже существующего фото с устройства (без capture -
+         браузер откроет обычный выбор файлов/галерею). -->
+    <input
+      id="galleryInput"
+      class="file-input"
+      type="file"
+      accept="image/*"
+    >
+
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    "use strict";
+
+    const cameraInput = document.getElementById("cameraInput");
+    const galleryInput = document.getElementById("galleryInput");
+    const photoButton = document.getElementById("photoButton");
+    const photoButtonText = document.getElementById("photoButtonText");
+    const galleryButton = document.getElementById("galleryButton");
+    const saveButton = document.getElementById("saveButton");
+
+    const styleSelect = document.getElementById("styleSelect");
+    const toneSelect = document.getElementById("toneSelect");
+    const toneField = document.getElementById("toneField");
+    const toneFieldLabel = document.getElementById("toneFieldLabel");
+    const toneSpacer = document.getElementById("toneSpacer");
+
+    const detailRange = document.getElementById("detailRange");
+    const detailValue = document.getElementById("detailValue");
+
+    const brightnessField = document.getElementById("brightnessField");
+    const brightnessRange = document.getElementById("brightnessRange");
+    const brightnessValue = document.getElementById("brightnessValue");
+
+    const previewShell = document.getElementById("previewShell");
+    const previewArea = document.getElementById("previewArea");
+
+    const resultCanvas = document.getElementById("resultCanvas");
+    const resultCtx = resultCanvas.getContext("2d", {
+      alpha: false,
+      willReadFrequently: true
+    });
+
+    const sourceCanvas = document.createElement("canvas");
+    const sourceCtx = sourceCanvas.getContext("2d", {
+      alpha: false,
+      willReadFrequently: true
+    });
+
+    const smallCanvas = document.createElement("canvas");
+    const smallCtx = smallCanvas.getContext("2d", {
+      alpha: false,
+      willReadFrequently: true
+    });
+
+    const emptyPreview = document.getElementById("emptyPreview");
+    const previewBadge = document.getElementById("previewBadge");
+    const styleStrip = document.getElementById("styleStrip");
+
+    // value = <select> option / internal key, label = short thumbnail caption
+    const STYLES = [
+      { value: "classic", label: "8-бит" },
+      { value: "gameboy", label: "Game Boy" },
+      { value: "mono", label: "Монохром" },
+      { value: "contour", label: "Комикс" },
+      { value: "vhs", label: "VHS" },
+      { value: "dither", label: "Ч/Б дизер" },
+      { value: "smart", label: "Авто-палитра" },
+      { value: "iso", label: "RPG" },
+      { value: "thermal", label: "Термо" },
+      { value: "ascii", label: "ASCII" },
+      { value: "synth", label: "Синтвейв" },
+      { value: "riso", label: "Risograph" }
+    ];
+
+    // Styles that draw straight onto a canvas (tiles, glyphs...)
+    // instead of mutating a pixel grid that then gets nearest-neighbor
+    // upscaled like the rest.
+    const SPECIAL_STYLES = new Set(["iso", "ascii", "synth"]);
+
+    const THUMB_SIZE = 68;
+    let thumbCanvases = {};
+
+    const statusChip = document.getElementById("statusChip");
+    const statusText = document.getElementById("statusText");
+
+    const toast = document.getElementById("toast");
+
+    let hasPhoto = false;
+    let originalImage = null;
+
+    let sourceWidth = 0;
+    let sourceHeight = 0;
+
+    let toastTimer = null;
+
+    // "Детализация": how many pixel blocks fit across the photo's short
+    // side. 45 matches the original fixed look; the slider now lets the
+    // person go from chunky retro blocks up to near-photographic detail.
+    let detailBlocks = Number(detailRange.value);
+
+    // Brightness offset (-60..60) applied before edge-detection in the
+    // "Комикс" (contour) style.
+    let comicBrightness = Number(brightnessRange.value);
+
+    // ---------- generic "extra" select field (tone / palette) ----------
+    // The single toneField/toneSelect control is reused across styles
+    // that need one extra dropdown: mono uses it for a duotone tint,
+    // thermal and synth use it to pick a color palette. Each group keeps
+    // its own remembered selection so switching styles back and forth
+    // doesn't lose the person's choice.
+
+    const EXTRA_GROUPS = {
+      mono: [
+        { value: "amber", label: "Янтарный" },
+        { value: "pink", label: "Киберпанк-розовый" },
+        { value: "teal", label: "Кино тил-оранж" }
+      ],
+      thermal: [
+        { value: "classic", label: "Классика (фиолет-жёлтый)" },
+        { value: "ironbow", label: "Ironbow" },
+        { value: "arctic", label: "Арктика (сине-белый)" },
+        { value: "lava", label: "Лава (красно-чёрный)" }
+      ],
+      synth: [
+        { value: "pink", label: "Розовый неон" },
+        { value: "purple", label: "Ультрафиолет" },
+        { value: "miami", label: "Майами (бирюза)" },
+        { value: "acid", label: "Кислотный" }
+      ]
+    };
+
+    const EXTRA_LABELS = {
+      mono: "Тонировка",
+      thermal: "Палитра",
+      synth: "Палитра"
+    };
+
+    const extraSelections = { mono: "amber", thermal: "classic", synth: "pink" };
+
+    function currentExtraGroup() {
+      const value = styleSelect.value;
+      return EXTRA_GROUPS[value] ? value : null;
+    }
+
+    function rebuildExtraSelect(group) {
+      toneSelect.innerHTML = "";
+
+      EXTRA_GROUPS[group].forEach(opt => {
+        const option = document.createElement("option");
+        option.value = opt.value;
+        option.textContent = opt.label;
+        toneSelect.appendChild(option);
+      });
+
+      toneSelect.value = extraSelections[group];
+      toneSelect.dataset.group = group;
+    }
+
+    function setStatus(text, active = false) {
+      statusText.textContent = text;
+      statusChip.classList.toggle("active", active);
+    }
+
+    function showToast(text) {
+      clearTimeout(toastTimer);
+      toast.textContent = text;
+      toast.classList.add("show");
+
+      toastTimer = setTimeout(() => {
+        toast.classList.remove("show");
+      }, 2400);
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    // 4x4 Bayer ordered-dither matrix, normalized to roughly -0.5..0.5.
+    // Used instead of hard luminance thresholds so color/tone transitions
+    // get a textured retro dither pattern rather than flat banding.
+    const BAYER4 = [
+      [0, 8, 2, 10],
+      [12, 4, 14, 6],
+      [3, 11, 1, 9],
+      [15, 7, 13, 5]
+    ].map(row => row.map(v => (v + 0.5) / 16 - 0.5));
+
+    function ditherOffset(x, y) {
+      return BAYER4[y & 3][x & 3];
+    }
+
+    // Quantizes a 0-255 channel value to `levels` evenly spaced steps,
+    // nudged by a dither offset so the boundary between steps is broken
+    // up into a dot pattern instead of a hard, banded edge.
+    function quantizeChannel(value, levels, dither, strength) {
+      const step = 255 / (levels - 1);
+      const nudged = clamp(value + dither * strength * step, 0, 255);
+      const level = clamp(Math.round(nudged / step), 0, levels - 1);
+      return level * step;
+    }
+
+    function updateControls() {
+      const group = currentExtraGroup();
+
+      toneField.hidden = !group;
+      toneSpacer.hidden = !!group;
+
+      if (group) {
+        toneFieldLabel.textContent = EXTRA_LABELS[group];
+        if (toneSelect.dataset.group !== group) {
+          rebuildExtraSelect(group);
+        }
+      }
+
+      brightnessField.hidden = styleSelect.value !== "contour";
+    }
+
+    function loadImageFromFile(file) {
+      return new Promise((resolve, reject) => {
+        if (!file || !file.type.startsWith("image/")) {
+          reject(new Error("Файл не является изображением."));
+          return;
+        }
+
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(img);
+        };
+
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error("Не удалось прочитать изображение."));
+        };
+
+        img.src = url;
+      });
+    }
+
+    function prepareSourceImage(img) {
+      const maxSide = 1800;
+
+      const originalWidth = img.naturalWidth || img.width;
+      const originalHeight = img.naturalHeight || img.height;
+
+      const longSide = Math.max(originalWidth, originalHeight);
+      const scale = longSide > maxSide ? maxSide / longSide : 1;
+
+      sourceWidth = Math.max(1, Math.round(originalWidth * scale));
+      sourceHeight = Math.max(1, Math.round(originalHeight * scale));
+
+      sourceCanvas.width = sourceWidth;
+      sourceCanvas.height = sourceHeight;
+
+      sourceCtx.imageSmoothingEnabled = true;
+      sourceCtx.clearRect(0, 0, sourceWidth, sourceHeight);
+      sourceCtx.drawImage(img, 0, 0, sourceWidth, sourceHeight);
+    }
+
+    function prepareSmallCanvas(pixelSize) {
+      const width = Math.max(1, Math.round(sourceWidth / pixelSize));
+      const height = Math.max(1, Math.round(sourceHeight / pixelSize));
+
+      smallCanvas.width = width;
+      smallCanvas.height = height;
+
+      smallCtx.imageSmoothingEnabled = true;
+      smallCtx.clearRect(0, 0, width, height);
+      smallCtx.drawImage(sourceCanvas, 0, 0, width, height);
+
+      return { width, height };
+    }
+
+    function setupResultCanvas() {
+      resultCanvas.width = sourceWidth;
+      resultCanvas.height = sourceHeight;
+    }
+
+    // Positions/sizes the (absolutely positioned) canvas so it's centered
+    // and fully visible inside preview-shell, preserving its aspect ratio -
+    // a manual "object-fit: contain" done with real measured pixels, since
+    // relying on CSS intrinsic sizing here caused layout blowouts on some
+    // mobile WebViews.
+    function fitPreviewShell() {
+      const areaW = previewArea.clientWidth;
+      const areaH = previewArea.clientHeight;
+      if (!areaW || !areaH) return;
+
+      if (!hasPhoto || !sourceWidth || !sourceHeight) {
+        previewShell.style.width = "100%";
+        previewShell.style.height = "100%";
+        previewShell.style.left = "0px";
+        previewShell.style.top = "0px";
+        return;
+      }
+
+      const scale = Math.min(areaW / sourceWidth, areaH / sourceHeight);
+      const w = Math.max(1, Math.round(sourceWidth * scale));
+      const h = Math.max(1, Math.round(sourceHeight * scale));
+
+      previewShell.style.width = `${w}px`;
+      previewShell.style.height = `${h}px`;
+      previewShell.style.left = `${Math.round((areaW - w) / 2)}px`;
+      previewShell.style.top = `${Math.round((areaH - h) / 2)}px`;
+    }
+
+    function fitResultCanvas() {
+      fitPreviewShell();
+      if (!resultCanvas.width || !resultCanvas.height) return;
+
+      const shellW = previewShell.clientWidth;
+      const shellH = previewShell.clientHeight;
+      if (!shellW || !shellH) return;
+
+      const scale = Math.min(shellW / resultCanvas.width, shellH / resultCanvas.height);
+      const dispW = Math.max(1, Math.round(resultCanvas.width * scale));
+      const dispH = Math.max(1, Math.round(resultCanvas.height * scale));
+
+      resultCanvas.style.width = `${dispW}px`;
+      resultCanvas.style.height = `${dispH}px`;
+      resultCanvas.style.left = `${Math.round((shellW - dispW) / 2)}px`;
+      resultCanvas.style.top = `${Math.round((shellH - dispH) / 2)}px`;
+    }
+
+    function upscaleNearest() {
+      resultCtx.imageSmoothingEnabled = false;
+      resultCtx.clearRect(0, 0, sourceWidth, sourceHeight);
+      resultCtx.drawImage(smallCanvas, 0, 0, sourceWidth, sourceHeight);
+    }
+
+    // Converts the "Детализация" slider into a per-style block divisor.
+    // `ratio` keeps each style's own character (chunky RPG tiles, fine
+    // dithering, etc.) relative to the same slider.
+    function pixelSizeFor(ratio, minPx, maxPx) {
+      const divisor = Math.max(6, detailBlocks * ratio);
+      return clamp(
+        Math.round(Math.min(sourceWidth, sourceHeight) / divisor),
+        minPx,
+        maxPx
+      );
+    }
+
+    // ---------- shared processing building blocks ----------
+
+    function boostSaturation(imageData, amount) {
+      const data = imageData.data;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+        data[i] = clamp(gray + (r - gray) * amount, 0, 255);
+        data[i + 1] = clamp(gray + (g - gray) * amount, 0, 255);
+        data[i + 2] = clamp(gray + (b - gray) * amount, 0, 255);
+      }
+    }
+
+    function quantizePixels(imageData, levels, strength) {
+      const data = imageData.data;
+      const w = imageData.width;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const p = i / 4;
+        const x = p % w;
+        const y = (p / w) | 0;
+        const d = ditherOffset(x, y);
+
+        data[i] = quantizeChannel(data[i], levels, d, strength);
+        data[i + 1] = quantizeChannel(data[i + 1], levels, d, strength);
+        data[i + 2] = quantizeChannel(data[i + 2], levels, d, strength);
+      }
+    }
+
+    function luminance(r, g, b) {
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+
+    // ---------- style: classic 8-bit ----------
+
+    function applyClassicStyle(imageData) {
+      boostSaturation(imageData, 1.25);
+      quantizePixels(imageData, 5, 0.85);
+    }
+
+    // ---------- style: Game Boy Camera ----------
+
+    const GAMEBOY_PALETTE = [
+      { r: 15, g: 56, b: 15 },
+      { r: 48, g: 98, b: 48 },
+      { r: 139, g: 172, b: 15 },
+      { r: 155, g: 188, b: 15 }
+    ];
+
+    function applyGameboyPalette(imageData) {
+      const data = imageData.data;
+      const w = imageData.width;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const p = i / 4;
+        const x = p % w;
+        const y = (p / w) | 0;
+
+        const l = luminance(data[i], data[i + 1], data[i + 2]) / 255;
+        const t = clamp(l * 3 + ditherOffset(x, y) * 1.15, 0, 3);
+        const index = Math.round(t);
+
+        data[i] = GAMEBOY_PALETTE[index].r;
+        data[i + 1] = GAMEBOY_PALETTE[index].g;
+        data[i + 2] = GAMEBOY_PALETTE[index].b;
+      }
+    }
+
+    // ---------- style: tinted duotone ----------
+
+    const DUOTONES = {
+      amber: { dark: { r: 32, g: 19, b: 4 }, light: { r: 255, g: 195, b: 77 } },
+      pink: { dark: { r: 24, g: 5, b: 18 }, light: { r: 255, g: 79, b: 163 } },
+      teal: { dark: { r: 8, g: 28, b: 32 }, light: { r: 255, g: 176, b: 102 } }
+    };
+
+    function applyMonoTone(imageData) {
+      const data = imageData.data;
+      const w = imageData.width;
+      const tone = DUOTONES[extraSelections.mono] || DUOTONES.amber;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const p = i / 4;
+        const x = p % w;
+        const y = (p / w) | 0;
+
+        const l = luminance(data[i], data[i + 1], data[i + 2]) / 255;
+        const t = clamp((l - 0.5) * 1.25 + 0.5 + ditherOffset(x, y) * 0.05, 0, 1);
+
+        data[i] = Math.round(tone.dark.r + (tone.light.r - tone.dark.r) * t);
+        data[i + 1] = Math.round(tone.dark.g + (tone.light.g - tone.dark.g) * t);
+        data[i + 2] = Math.round(tone.dark.b + (tone.light.b - tone.dark.b) * t);
+      }
+    }
+
+    // ---------- style: contour / comic ----------
+
+    function sobelEdgeMask(w, h, lum, threshold) {
+      const edge = new Uint8Array(w * h);
+
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x;
+
+          const gx =
+            lum[i - w + 1] + 2 * lum[i + 1] + lum[i + w + 1] -
+            lum[i - w - 1] - 2 * lum[i - 1] - lum[i + w - 1];
+
+          const gy =
+            lum[i + w - 1] + 2 * lum[i + w] + lum[i + w + 1] -
+            lum[i - w - 1] - 2 * lum[i - w] - lum[i - w + 1];
+
+          edge[i] = Math.sqrt(gx * gx + gy * gy) > threshold ? 1 : 0;
+        }
+      }
+
+      return edge;
+    }
+
+    function luminanceGrid(imageData) {
+      const w = imageData.width;
+      const h = imageData.height;
+      const data = imageData.data;
+      const lum = new Float32Array(w * h);
+
+      for (let i = 0; i < w * h; i++) {
+        const idx = i * 4;
+        lum[i] = luminance(data[idx], data[idx + 1], data[idx + 2]);
+      }
+
+      return lum;
+    }
+
+    function adjustBrightness(imageData, amount) {
+      if (!amount) return;
+      const data = imageData.data;
+
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = clamp(data[i] + amount, 0, 255);
+        data[i + 1] = clamp(data[i + 1] + amount, 0, 255);
+        data[i + 2] = clamp(data[i + 2] + amount, 0, 255);
+      }
+    }
+
+    function applyContourStyle(imageData) {
+      const w = imageData.width;
+      const h = imageData.height;
+      const data = imageData.data;
+
+      adjustBrightness(imageData, comicBrightness);
+
+      const lum = luminanceGrid(imageData);
+      const edge = sobelEdgeMask(w, h, lum, 95);
+
+      boostSaturation(imageData, 1.2);
+      quantizePixels(imageData, 4, 0.6);
+
+      for (let i = 0; i < w * h; i++) {
+        if (!edge[i]) continue;
+        const idx = i * 4;
+        data[idx] = 18;
+        data[idx + 1] = 16;
+        data[idx + 2] = 20;
+      }
+    }
+
+    // ---------- style: VHS / glitch ----------
+
+    function applyVhsColor(imageData) {
+      const w = imageData.width;
+      const h = imageData.height;
+      const src = Uint8ClampedArray.from(imageData.data);
+      const data = imageData.data;
+      const shift = Math.max(1, Math.round(w / 55));
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          const rx = clamp(x - shift, 0, w - 1);
+          const bx = clamp(x + shift, 0, w - 1);
+          const rIdx = (y * w + rx) * 4;
+          const bIdx = (y * w + bx) * 4;
+
+          let r = src[rIdx];
+          let g = src[idx + 1];
+          let b = src[bIdx + 2];
+
+          const gray = luminance(r, g, b);
+          r = r * 0.85 + gray * 0.15;
+          g = g * 0.85 + gray * 0.15;
+          b = b * 0.85 + gray * 0.15;
+
+          data[idx] = clamp(24 + r * 0.85, 0, 255);
+          data[idx + 1] = clamp(24 + g * 0.85, 0, 255);
+          data[idx + 2] = clamp(30 + b * 0.85, 0, 255);
+        }
+      }
+    }
+
+    function drawScanlines() {
+      resultCtx.save();
+      resultCtx.globalAlpha = 0.16;
+      resultCtx.fillStyle = "#000";
+
+      for (let y = 0; y < sourceHeight; y += 3) {
+        resultCtx.fillRect(0, y, sourceWidth, 1);
+      }
+
+      resultCtx.restore();
+    }
+
+    // ---------- style: 1-bit newspaper dither ----------
+
+    function applyOneBitDither(imageData) {
+      const data = imageData.data;
+      const w = imageData.width;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const p = i / 4;
+        const x = p % w;
+        const y = (p / w) | 0;
+
+        const gray = luminance(data[i], data[i + 1], data[i + 2]);
+        const threshold = 128 + ditherOffset(x, y) * 190;
+        const v = gray > threshold ? 255 : 0;
+
+        data[i] = v;
+        data[i + 1] = v;
+        data[i + 2] = v;
+      }
+    }
+
+    // ---------- style: smart palette (k-means) ----------
+    // Instead of a fixed retro palette, this finds the K colors that
+    // actually dominate the photo and repaints every pixel with its
+    // nearest match - a different, tailor-made palette per photo.
+
+    function kMeansPalette(imageData, k, iterations) {
+      const data = imageData.data;
+      const n = imageData.width * imageData.height;
+      const count = Math.max(1, Math.min(k, n));
+
+      const centroids = [];
+      for (let c = 0; c < count; c++) {
+        const idx = Math.floor(((c + 0.5) * n) / count) * 4;
+        centroids.push([data[idx], data[idx + 1], data[idx + 2]]);
+      }
+
+      const assignments = new Int32Array(n);
+
+      for (let iter = 0; iter < iterations; iter++) {
+        for (let p = 0; p < n; p++) {
+          const idx = p * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          let best = 0;
+          let bestDist = Infinity;
+
+          for (let c = 0; c < count; c++) {
+            const cc = centroids[c];
+            const dr = r - cc[0];
+            const dg = g - cc[1];
+            const db = b - cc[2];
+            const d = dr * dr + dg * dg + db * db;
+
+            if (d < bestDist) {
+              bestDist = d;
+              best = c;
+            }
+          }
+
+          assignments[p] = best;
+        }
+
+        const sums = Array.from({ length: count }, () => [0, 0, 0, 0]);
+
+        for (let p = 0; p < n; p++) {
+          const idx = p * 4;
+          const c = assignments[p];
+          sums[c][0] += data[idx];
+          sums[c][1] += data[idx + 1];
+          sums[c][2] += data[idx + 2];
+          sums[c][3] += 1;
+        }
+
+        for (let c = 0; c < count; c++) {
+          if (sums[c][3] > 0) {
+            centroids[c] = [
+              sums[c][0] / sums[c][3],
+              sums[c][1] / sums[c][3],
+              sums[c][2] / sums[c][3]
+            ];
+          }
+        }
+      }
+
+      return { centroids, assignments };
+    }
+
+    function applySmartPalette(imageData) {
+      boostSaturation(imageData, 1.15);
+
+      const { centroids, assignments } = kMeansPalette(imageData, 9, 5);
+      const data = imageData.data;
+
+      for (let p = 0; p < assignments.length; p++) {
+        const c = centroids[assignments[p]];
+        const idx = p * 4;
+        data[idx] = Math.round(c[0]);
+        data[idx + 1] = Math.round(c[1]);
+        data[idx + 2] = Math.round(c[2]);
+      }
+    }
+
+    // ---------- style: thermal camera ----------
+
+    const THERMAL_PALETTES = {
+      classic: [
+        { t: 0.00, c: [8, 4, 40] },
+        { t: 0.22, c: [65, 0, 130] },
+        { t: 0.45, c: [190, 0, 90] },
+        { t: 0.65, c: [235, 70, 10] },
+        { t: 0.85, c: [255, 190, 10] },
+        { t: 1.00, c: [255, 255, 225] }
+      ],
+      ironbow: [
+        { t: 0.00, c: [0, 0, 0] },
+        { t: 0.20, c: [55, 0, 90] },
+        { t: 0.45, c: [180, 20, 60] },
+        { t: 0.68, c: [255, 120, 0] },
+        { t: 0.88, c: [255, 230, 60] },
+        { t: 1.00, c: [255, 255, 255] }
+      ],
+      arctic: [
+        { t: 0.00, c: [4, 8, 32] },
+        { t: 0.30, c: [10, 60, 140] },
+        { t: 0.60, c: [60, 160, 220] },
+        { t: 0.85, c: [180, 230, 255] },
+        { t: 1.00, c: [255, 255, 255] }
+      ],
+      lava: [
+        { t: 0.00, c: [4, 0, 0] },
+        { t: 0.30, c: [90, 0, 0] },
+        { t: 0.60, c: [200, 30, 0] },
+        { t: 0.85, c: [255, 120, 0] },
+        { t: 1.00, c: [255, 220, 80] }
+      ]
+    };
+
+    function thermalColor(stops, t) {
+      t = clamp(t, 0, 1);
+
+      for (let i = 0; i < stops.length - 1; i++) {
+        const a = stops[i];
+        const b = stops[i + 1];
+
+        if (t >= a.t && t <= b.t) {
+          const local = (t - a.t) / (b.t - a.t || 1);
+          return [
+            a.c[0] + (b.c[0] - a.c[0]) * local,
+            a.c[1] + (b.c[1] - a.c[1]) * local,
+            a.c[2] + (b.c[2] - a.c[2]) * local
+          ];
+        }
+      }
+
+      return stops[stops.length - 1].c;
+    }
+
+    function applyThermal(imageData) {
+      const data = imageData.data;
+      const w = imageData.width;
+      const stops = THERMAL_PALETTES[extraSelections.thermal] || THERMAL_PALETTES.classic;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const p = i / 4;
+        const x = p % w;
+        const y = (p / w) | 0;
+
+        const l = luminance(data[i], data[i + 1], data[i + 2]) / 255;
+        const t = clamp(l + ditherOffset(x, y) * 0.03, 0, 1);
+        const c = thermalColor(stops, t);
+
+        data[i] = Math.round(c[0]);
+        data[i + 1] = Math.round(c[1]);
+        data[i + 2] = Math.round(c[2]);
+      }
+    }
+
+    // ---------- style: Risograph ----------
+    // Two spot-color ink layers, each a dithered coverage mask, with the
+    // second layer shifted a couple of pixels to mimic print
+    // misregistration; overlapping ink darkens/mixes like real riso.
+
+    const RISO_INKS = {
+      a: { r: 0, g: 107, b: 255 },
+      b: { r: 255, g: 66, b: 161 }
+    };
+
+    function applyRisograph(imageData) {
+      const w = imageData.width;
+      const h = imageData.height;
+      const src = Uint8ClampedArray.from(imageData.data);
+      const data = imageData.data;
+      const shift = Math.max(1, Math.round(w / 70));
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          const lA = luminance(src[idx], src[idx + 1], src[idx + 2]) / 255;
+
+          const bx = clamp(x + shift, 0, w - 1);
+          const bIdx = (y * w + bx) * 4;
+          const lB = luminance(src[bIdx], src[bIdx + 1], src[bIdx + 2]) / 255;
+
+          const covA = (1 - lA) + ditherOffset(x, y) * 0.5 > 0.5 ? 1 : 0;
+          const covB = (1 - lB) + ditherOffset(x + 2, y + 1) * 0.5 > 0.5 ? 1 : 0;
+
+          let r = 250, g = 248, b = 240;
+
+          if (covA) {
+            r = (r * RISO_INKS.a.r) / 255;
+            g = (g * RISO_INKS.a.g) / 255;
+            b = (b * RISO_INKS.a.b) / 255;
+          }
+
+          if (covB) {
+            r = (r * RISO_INKS.b.r) / 255;
+            g = (g * RISO_INKS.b.g) / 255;
+            b = (b * RISO_INKS.b.b) / 255;
+          }
+
+          data[idx] = clamp(r, 0, 255);
+          data[idx + 1] = clamp(g, 0, 255);
+          data[idx + 2] = clamp(b, 0, 255);
+        }
+      }
+    }
+
+    // ---------- special style: isometric / RPG tiles ----------
+
+    function drawTiles(ctx, targetW, targetH, image, cellW, cellH) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, targetW, targetH);
+
+      boostSaturation(image, 1.15);
+      quantizePixels(image, 6, 0.55);
+
+      const w = image.width;
+      const h = image.height;
+      const data = image.data;
+      const border = Math.max(1, Math.round(Math.min(cellW, cellH) * 0.09));
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          const px = x * cellW;
+          const py = y * cellH;
+          const cw = Math.ceil(cellW);
+          const ch = Math.ceil(cellH);
+
+          ctx.fillStyle = `rgb(${r},${g},${b})`;
+          ctx.fillRect(px, py, cw, ch);
+
+          ctx.fillStyle = "rgba(0,0,0,0.28)";
+          ctx.fillRect(px, py + cellH - border, cw, border);
+          ctx.fillRect(px + cellW - border, py, border, ch);
+
+          ctx.fillStyle = "rgba(255,255,255,0.16)";
+          ctx.fillRect(px, py, cw, border);
+          ctx.fillRect(px, py, border, ch);
+        }
+      }
+    }
+
+    // ---------- special style: ASCII art ----------
+
+    const ASCII_CHARS = " .:-=+*#%@";
+
+    function drawAscii(ctx, targetW, targetH, image, cellW, cellH) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.fillStyle = "#0b0b0f";
+      ctx.fillRect(0, 0, targetW, targetH);
+
+      const w = image.width;
+      const h = image.height;
+      const data = image.data;
+      const fontSize = Math.max(6, Math.floor(Math.min(cellW, cellH) * 1.05));
+
+      ctx.font = `${fontSize}px "Courier New", monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          const l = luminance(r, g, b) / 255;
+          const charIndex = clamp(Math.round(l * (ASCII_CHARS.length - 1)), 0, ASCII_CHARS.length - 1);
+          const ch = ASCII_CHARS[charIndex];
+
+          if (ch === " ") continue;
+
+          ctx.fillStyle = `rgb(${r},${g},${b})`;
+          ctx.fillText(ch, x * cellW + cellW / 2, y * cellH + cellH / 2);
+        }
+      }
+    }
+
+    // ---------- special style: neon synthwave contour ----------
+    // A moody duotone base plus a bright magenta/cyan edge layer,
+    // rendered twice (blurred, then sharp) with additive blending for
+    // an actual glow instead of a flat colored outline.
+
+    const SYNTH_PALETTES = {
+      pink: {
+        dark: { r: 10, g: 6, b: 36 }, light: { r: 255, g: 140, b: 210 },
+        edgeA: [255, 60, 210], edgeB: [60, 230, 255]
+      },
+      purple: {
+        dark: { r: 8, g: 4, b: 42 }, light: { r: 190, g: 140, b: 255 },
+        edgeA: [200, 80, 255], edgeB: [80, 220, 255]
+      },
+      miami: {
+        dark: { r: 2, g: 20, b: 28 }, light: { r: 110, g: 240, b: 220 },
+        edgeA: [70, 240, 230], edgeB: [255, 90, 180]
+      },
+      acid: {
+        dark: { r: 5, g: 20, b: 8 }, light: { r: 170, g: 255, b: 120 },
+        edgeA: [150, 255, 60], edgeB: [255, 240, 80]
+      }
+    };
+
+    function currentSynthPalette() {
+      return SYNTH_PALETTES[extraSelections.synth] || SYNTH_PALETTES.pink;
+    }
+
+    function applySynthBase(imageData) {
+      const data = imageData.data;
+      const w = imageData.width;
+      const tone = currentSynthPalette();
+
+      for (let i = 0; i < data.length; i += 4) {
+        const p = i / 4;
+        const x = p % w;
+        const y = (p / w) | 0;
+
+        const l = luminance(data[i], data[i + 1], data[i + 2]) / 255;
+        const t = clamp((l - 0.5) * 1.1 + 0.5 + ditherOffset(x, y) * 0.04, 0, 1);
+
+        data[i] = Math.round(tone.dark.r + (tone.light.r - tone.dark.r) * t);
+        data[i + 1] = Math.round(tone.dark.g + (tone.light.g - tone.dark.g) * t);
+        data[i + 2] = Math.round(tone.dark.b + (tone.light.b - tone.dark.b) * t);
+      }
+    }
+
+    function drawSynth(ctx, targetW, targetH, rawImage) {
+      const w = rawImage.width;
+      const h = rawImage.height;
+
+      const lum = luminanceGrid(rawImage);
+      const edge = sobelEdgeMask(w, h, lum, 85);
+
+      const tinted = new ImageData(new Uint8ClampedArray(rawImage.data), w, h);
+      applySynthBase(tinted);
+
+      const baseCanvas = document.createElement("canvas");
+      baseCanvas.width = w;
+      baseCanvas.height = h;
+      baseCanvas.getContext("2d").putImageData(tinted, 0, 0);
+
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, targetW, targetH);
+      ctx.drawImage(baseCanvas, 0, 0, targetW, targetH);
+
+      const edgeCanvas = document.createElement("canvas");
+      edgeCanvas.width = w;
+      edgeCanvas.height = h;
+
+      const edgeCtx = edgeCanvas.getContext("2d");
+      const edgeImg = edgeCtx.createImageData(w, h);
+      const palette = currentSynthPalette();
+
+      for (let i = 0; i < w * h; i++) {
+        if (!edge[i]) continue;
+        const idx = i * 4;
+        const useB = ((i % w) + ((i / w) | 0)) % 5 === 0;
+        const color = useB ? palette.edgeB : palette.edgeA;
+
+        edgeImg.data[idx] = color[0];
+        edgeImg.data[idx + 1] = color[1];
+        edgeImg.data[idx + 2] = color[2];
+        edgeImg.data[idx + 3] = 255;
+      }
+
+      edgeCtx.putImageData(edgeImg, 0, 0);
+
+      const edgeFull = document.createElement("canvas");
+      edgeFull.width = targetW;
+      edgeFull.height = targetH;
+
+      const edgeFullCtx = edgeFull.getContext("2d");
+      edgeFullCtx.imageSmoothingEnabled = false;
+      edgeFullCtx.drawImage(edgeCanvas, 0, 0, targetW, targetH);
+
+      const blurPx = Math.max(2, Math.round(targetW / 180));
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.filter = `blur(${blurPx}px)`;
+      ctx.globalAlpha = 0.85;
+      ctx.drawImage(edgeFull, 0, 0);
+      ctx.filter = "none";
+      ctx.globalAlpha = 1;
+      ctx.drawImage(edgeFull, 0, 0);
+      ctx.restore();
+    }
+
+    // ---------- style registry ----------
+    // Every style except the SPECIAL_STYLES set mutates an ImageData in
+    // place at a pixelated resolution and then gets nearest-neighbor
+    // upscaled; special styles draw straight onto a canvas instead.
+
+    const STYLE_PROCESSORS = {
+      classic: applyClassicStyle,
+      gameboy: applyGameboyPalette,
+      mono: applyMonoTone,
+      contour: applyContourStyle,
+      vhs: applyVhsColor,
+      dither: applyOneBitDither,
+      smart: applySmartPalette,
+      thermal: applyThermal,
+      riso: applyRisograph
+    };
+
+    const STYLE_RATIO = {
+      classic: 1, gameboy: 48 / 45, mono: 1,
+      contour: 42 / 45, vhs: 30 / 45, dither: 60 / 45,
+      smart: 1, thermal: 0.85, riso: 0.9,
+      iso: 0.55, ascii: 0.48, synth: 1
+    };
+
+    const STYLE_RANGE = {
+      classic: [2, 40], gameboy: [2, 40], mono: [2, 40],
+      contour: [2, 36], vhs: [2, 34], dither: [2, 60],
+      smart: [3, 40], thermal: [3, 40], riso: [2, 40],
+      iso: [6, 50], ascii: [5, 40], synth: [2, 34]
+    };
+
+    // Rough block counts for the small thumbnails, tuned per style so
+    // tiles/glyphs stay recognizable at 68x68px.
+    const THUMB_BASE_BLOCKS = {
+      classic: 14, gameboy: 14, mono: 14, contour: 14, vhs: 14, dither: 16,
+      smart: 13, thermal: 14, riso: 13, iso: 9, ascii: 9, synth: 13
+    };
+
+    function drawSpecialStyle(styleKey, ctx, targetW, targetH, image, cellW, cellH, blockSize) {
+      switch (styleKey) {
+        case "iso":
+          drawTiles(ctx, targetW, targetH, image, cellW, cellH);
+          break;
+        case "ascii":
+          drawAscii(ctx, targetW, targetH, image, cellW, cellH);
+          break;
+        case "synth":
+          drawSynth(ctx, targetW, targetH, image);
+          break;
+      }
+    }
+
+    function renderPixelStyle(styleKey) {
+      const [minPx, maxPx] = STYLE_RANGE[styleKey];
+      const pixelSize = pixelSizeFor(STYLE_RATIO[styleKey], minPx, maxPx);
+
+      const size = prepareSmallCanvas(pixelSize);
+      const image = smallCtx.getImageData(0, 0, size.width, size.height);
+
+      STYLE_PROCESSORS[styleKey](image);
+      smallCtx.putImageData(image, 0, 0);
+
+      setupResultCanvas();
+      upscaleNearest();
+
+      if (styleKey === "vhs") drawScanlines();
+    }
+
+    function renderSpecial(styleKey) {
+      const [minPx, maxPx] = STYLE_RANGE[styleKey];
+      const blockSize = pixelSizeFor(STYLE_RATIO[styleKey], minPx, maxPx);
+
+      const size = prepareSmallCanvas(blockSize);
+      const image = smallCtx.getImageData(0, 0, size.width, size.height);
+
+      setupResultCanvas();
+
+      const cellWidth = sourceWidth / size.width;
+      const cellHeight = sourceHeight / size.height;
+
+      drawSpecialStyle(styleKey, resultCtx, sourceWidth, sourceHeight, image, cellWidth, cellHeight, blockSize);
+    }
+
+    function renderCurrentStyle() {
+      if (!hasPhoto) {
+        updateControls();
+        return;
+      }
+
+      updateControls();
+
+      const styleKey = styleSelect.value;
+
+      if (SPECIAL_STYLES.has(styleKey)) {
+        renderSpecial(styleKey);
+      } else {
+        renderPixelStyle(styleKey);
+      }
+
+      fitResultCanvas();
+
+      previewBadge.textContent =
+        styleSelect.options[styleSelect.selectedIndex].textContent;
+
+      updateStripSelection();
+      setStatus("Готово", true);
+    }
+
+    // ---------- style-preview thumbnail strip ----------
+
+    const tSourceCanvas = document.createElement("canvas");
+    const tSourceCtx = tSourceCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
+    const tSmallCanvas = document.createElement("canvas");
+    const tSmallCtx = tSmallCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
+
+    function buildStyleStrip() {
+      styleStrip.innerHTML = "";
+      thumbCanvases = {};
+
+      STYLES.forEach(style => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "style-thumb";
+        item.dataset.value = style.value;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = THUMB_SIZE;
+        canvas.height = THUMB_SIZE;
+
+        const label = document.createElement("span");
+        label.className = "style-thumb-label";
+        label.textContent = style.label;
+
+        item.appendChild(canvas);
+        item.appendChild(label);
+        styleStrip.appendChild(item);
+
+        thumbCanvases[style.value] = canvas;
+
+        item.addEventListener("click", () => {
+          if (styleSelect.value === style.value) return;
+          styleSelect.value = style.value;
+          renderCurrentStyle();
+        });
+      });
+    }
+
+    function prepareThumbSquare() {
+      const cropSize = Math.min(sourceWidth, sourceHeight);
+      const sx = (sourceWidth - cropSize) / 2;
+      const sy = (sourceHeight - cropSize) / 2;
+      const res = 220;
+
+      tSourceCanvas.width = res;
+      tSourceCanvas.height = res;
+      tSourceCtx.imageSmoothingEnabled = true;
+      tSourceCtx.drawImage(sourceCanvas, sx, sy, cropSize, cropSize, 0, 0, res, res);
+    }
+
+    function thumbSmallImage(blocks) {
+      const res = tSourceCanvas.width;
+      const w = Math.max(1, Math.round(blocks));
+
+      tSmallCanvas.width = w;
+      tSmallCanvas.height = w;
+      tSmallCtx.imageSmoothingEnabled = true;
+      tSmallCtx.drawImage(tSourceCanvas, 0, 0, w, w);
+
+      return tSmallCtx.getImageData(0, 0, w, w);
+    }
+
+    function paintThumb(canvas) {
+      const ctx = canvas.getContext("2d", { alpha: false });
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, THUMB_SIZE, THUMB_SIZE);
+      ctx.drawImage(tSmallCanvas, 0, 0, THUMB_SIZE, THUMB_SIZE);
+    }
+
+    function thumbBlocksFor(styleKey) {
+      const base = THUMB_BASE_BLOCKS[styleKey] || 14;
+      // cells across the thumbnail: more detail -> more cells
+      return clamp(Math.round((220 / base) * (detailBlocks / 45)), 6, 64);
+    }
+
+    function renderThumbnails() {
+      if (!hasPhoto) return;
+
+      prepareThumbSquare();
+
+      STYLES.forEach(style => {
+        const key = style.value;
+        const blocks = thumbBlocksFor(key);
+        const image = thumbSmallImage(blocks);
+        const canvas = thumbCanvases[key];
+
+        if (SPECIAL_STYLES.has(key)) {
+          canvas.width = THUMB_SIZE;
+          canvas.height = THUMB_SIZE;
+
+          const ctx = canvas.getContext("2d", { alpha: false });
+          const cell = THUMB_SIZE / image.width;
+
+          drawSpecialStyle(key, ctx, THUMB_SIZE, THUMB_SIZE, image, cell, cell, cell);
+        } else {
+          STYLE_PROCESSORS[key](image);
+          tSmallCtx.putImageData(image, 0, 0);
+          paintThumb(canvas);
+        }
+      });
+    }
+
+    function updateStripSelection() {
+      const items = styleStrip.querySelectorAll(".style-thumb");
+
+      items.forEach(item => {
+        item.classList.toggle("active", item.dataset.value === styleSelect.value);
+      });
+    }
+
+    // Coalesces rapid slider drag events into one render per animation
+    // frame, so the main preview and thumbnails genuinely update live
+    // while dragging instead of lagging behind or skipping frames.
+    let renderScheduled = false;
+
+    function scheduleLiveRender() {
+      if (renderScheduled) return;
+      renderScheduled = true;
+
+      requestAnimationFrame(() => {
+        renderScheduled = false;
+        renderCurrentStyle();
+        renderThumbnails();
+      });
+    }
+
+    async function handlePhoto(file) {
+      try {
+        setStatus("Обработка…");
+        photoButton.disabled = true;
+        galleryButton.disabled = true;
+
+        originalImage = await loadImageFromFile(file);
+        prepareSourceImage(originalImage);
+
+        hasPhoto = true;
+
+        emptyPreview.hidden = true;
+        resultCanvas.hidden = false;
+        styleStrip.hidden = false;
+
+        photoButtonText.textContent = "Новое фото";
+        saveButton.disabled = false;
+
+        renderThumbnails();
+        renderCurrentStyle();
+
+        showToast("Фото обработано");
+      } catch (error) {
+        console.error(error);
+        showToast(error.message || "Не удалось обработать фото");
+        setStatus("Ошибка");
+      } finally {
+        photoButton.disabled = false;
+        galleryButton.disabled = false;
+      }
+    }
+
+    function resetPhoto() {
+      hasPhoto = false;
+      originalImage = null;
+
+      resultCanvas.hidden = true;
+      emptyPreview.hidden = false;
+      styleStrip.hidden = true;
+      fitPreviewShell();
+
+      resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+
+      saveButton.disabled = true;
+      photoButtonText.textContent = "Сделать фото";
+      previewBadge.textContent = "Оригинал";
+
+      setStatus("Готово");
+    }
+
+    function saveImage() {
+      if (!hasPhoto || resultCanvas.width === 0) {
+        showToast("Сначала сделайте фото");
+        return;
+      }
+
+      resultCanvas.toBlob(blob => {
+        if (!blob) {
+          showToast("Не удалось создать PNG");
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+
+        const styleName =
+          styleSelect.options[styleSelect.selectedIndex].textContent
+            .replace(/[^\wа-яё0-9]+/gi, "_")
+            .replace(/^_+|_+$/g, "")
+            .toLowerCase();
+
+        const timestamp =
+          new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+
+        link.href = url;
+        link.download = `pixel-art-${styleName}-${timestamp}.png`;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        showToast("PNG сохранён");
+      }, "image/png");
+    }
+
+    /*
+      Здесь НЕ используется getUserMedia().
+      Поэтому страница может быть открыта как: file:///.../index.html
+      При нажатии браузер/ОС открывает штатную камеру или галерею.
+    */
+    photoButton.addEventListener("click", () => {
+      if (hasPhoto) resetPhoto();
+      cameraInput.value = "";
+      cameraInput.click();
+    });
+
+    cameraInput.addEventListener("change", async event => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      await handlePhoto(file);
+    });
+
+    galleryButton.addEventListener("click", () => {
+      if (hasPhoto) resetPhoto();
+      galleryInput.value = "";
+      galleryInput.click();
+    });
+
+    galleryInput.addEventListener("change", async event => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      await handlePhoto(file);
+    });
+
+    saveButton.addEventListener("click", saveImage);
+
+    styleSelect.addEventListener("change", () => {
+      renderCurrentStyle();
+      renderThumbnails();
+    });
+
+    toneSelect.addEventListener("change", () => {
+      const group = currentExtraGroup();
+      if (group) extraSelections[group] = toneSelect.value;
+      renderCurrentStyle();
+      renderThumbnails();
+    });
+
+    detailRange.addEventListener("input", () => {
+      detailBlocks = Number(detailRange.value);
+      detailValue.textContent = detailRange.value;
+      scheduleLiveRender();
+    });
+
+    brightnessRange.addEventListener("input", () => {
+      comicBrightness = Number(brightnessRange.value);
+      brightnessValue.textContent = comicBrightness > 0 ? `+${comicBrightness}` : String(comicBrightness);
+      scheduleLiveRender();
+    });
+
+    // ---------- swipe on the preview to switch style ----------
+    // Lets the person flip through processing modes with a finger swipe
+    // directly over the preview, in addition to tapping the thumbnail
+    // strip below it.
+
+    function stepStyle(direction) {
+      const currentIndex = STYLES.findIndex(s => s.value === styleSelect.value);
+      const nextIndex = (currentIndex + direction + STYLES.length) % STYLES.length;
+
+      styleSelect.value = STYLES[nextIndex].value;
+      renderCurrentStyle();
+      renderThumbnails();
+
+      const activeThumb = styleStrip.querySelector(
+        `.style-thumb[data-value="${STYLES[nextIndex].value}"]`
+      );
+      if (activeThumb) {
+        activeThumb.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+      }
+    }
+
+    let swipeTracking = false;
+    let swipeStartX = 0;
+    let swipeStartY = 0;
+    let swipeDX = 0;
+    let swipeDY = 0;
+
+    previewShell.addEventListener("touchstart", event => {
+      if (!hasPhoto || event.touches.length !== 1) return;
+      swipeTracking = true;
+      swipeStartX = event.touches[0].clientX;
+      swipeStartY = event.touches[0].clientY;
+      swipeDX = 0;
+      swipeDY = 0;
+    }, { passive: true });
+
+    previewShell.addEventListener("touchmove", event => {
+      if (!swipeTracking || event.touches.length !== 1) return;
+
+      swipeDX = event.touches[0].clientX - swipeStartX;
+      swipeDY = event.touches[0].clientY - swipeStartY;
+
+      // Once the gesture is clearly horizontal, stop the page/browser
+      // from treating it as a scroll or an edge-swipe navigation.
+      if (Math.abs(swipeDX) > 10 && Math.abs(swipeDX) > Math.abs(swipeDY)) {
+        event.preventDefault();
+      }
+    }, { passive: false });
+
+    previewShell.addEventListener("touchend", () => {
+      if (!swipeTracking) return;
+      swipeTracking = false;
+
+      const horizontalEnough = Math.abs(swipeDX) > 45 && Math.abs(swipeDX) > Math.abs(swipeDY) * 1.3;
+      if (horizontalEnough) stepStyle(swipeDX < 0 ? 1 : -1);
+    }, { passive: true });
+
+    previewShell.addEventListener("touchcancel", () => {
+      swipeTracking = false;
+    }, { passive: true });
+
+    buildStyleStrip();
+    updateControls();
+    setStatus("Готово");
+
+    let fitTimer = null;
+    function scheduleFit() {
+      clearTimeout(fitTimer);
+      fitTimer = setTimeout(fitResultCanvas, 60);
+    }
+    window.addEventListener("resize", scheduleFit);
+    if (window.ResizeObserver) {
+      new ResizeObserver(scheduleFit).observe(previewArea);
+    }
+    window.addEventListener("orientationchange", scheduleFit);
+  </script>
+</body>
+</html>
